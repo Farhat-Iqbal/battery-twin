@@ -11,3 +11,4 @@ mosquitto/config/passwd
 .pytest_cache/
 mlruns/
 mlflow.db
+mosquitto/config/passwd.backup*
