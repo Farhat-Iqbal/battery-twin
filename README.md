@@ -1,77 +1,117 @@
 # Battery Digital Twin
 
-A simulated battery monitoring system featuring real-time
-MQTT telemetry, SoC/SoH estimation, fault injection,
-and anomaly detection.
+[![CI](https://github.com/Farhat-Iqbal/battery-twin/actions/workflows/ci.yml/badge.svg)](https://github.com/Farhat-Iqbal/battery-twin/actions/workflows/ci.yml)
 
-## 🎬 Project Demo
+A digital twin of a single battery cell. A simulator streams sensor data over MQTT, a twin service estimates state of charge (SoC) and state of health (SoH) and flags voltage anomalies, and a secured API feeds a live Next.js dashboard. All services run in Docker Compose.
 
-Watch the 48-second demonstration of the Battery Digital Twin.
+> **This is a demonstrator, not a production system.** All data is simulated, there is one cell, and the SoH model is trained on a public lab dataset (NASA PCoE, cell B0005).
+
+## Demo
 
 [https://github.com/user-attachments/assets/89981ebf-0370-4918-9184-3987479294fb]
 
+## Architecture
 
-Simulated battery digital twin: MQTT ingestion, TimescaleDB, SoC/SoH estimation, anomaly detection, a Next.js dashboard and a read-only LLM assistant.
+```mermaid
+flowchart LR
+    SIM[Simulator] -->|MQTT, auth| MQ[Mosquitto broker]
+    MQ --> ING[Ingestion<br/>validates with Pydantic]
+    ING --> DB[(TimescaleDB)]
+    DB <--> TW[Twin<br/>SoC, SoH, alerts]
+    DB --> API[FastAPI<br/>JWT login]
+    API --> DASH[Next.js dashboard]
+```
 
-**Status:** in progress. Infrastructure setup (MQTT broker and TimescaleDB) is done. Simulator is publishing battery readings over MQTT. Ingestion service is consuming readings and saving them to TimescaleDB (Phase 1 complete).
+| Service | What it does |
+| --- | --- |
+| `simulator` | Publishes voltage, current and temperature once per second. Cycles between discharge and charge. Press Enter to inject a 10-second fault (overheating and voltage drop). |
+| `mosquitto` | MQTT broker with username/password authentication (`allow_anonymous false`). |
+| `ingestion` | Subscribes to `battery/+/telemetry`, validates each message with Pydantic and stores it in the `readings` hypertable. |
+| `timescaledb` | PostgreSQL with TimescaleDB. Hypertables: `readings`, `twin_state`. Plain table: `alerts`. Created from `db/init.sql` on first start. |
+| `twin` | Estimates SoC by Coulomb counting, computes the expected voltage, and raises an alert when the residual (measured minus expected) exceeds 0.1 V. Predicts SoH with a regression model. Resumes SoC and ageing from the database after a restart. |
+| `api` | FastAPI with JWT authentication. |
+| `dashboard` | Next.js, Tailwind and Recharts: KPI cards, measured vs expected voltage chart, alerts list, 2-second refresh. |
 
-## Quick start (so far)
+## How the twin works
 
-1. Copy `.env.example` to `.env` and set a password.
-2. Run `docker compose up -d`.
+- **SoC:** Coulomb counting, `SoC += current * dt / capacity` (capacity 2.5 Ah).
+- **Expected voltage:** `3.0 + SoC/100 * 1.2 - current * R0` with `R0 = 0.05 ohm`.
+- **Anomaly:** an alert is raised when `|measured - expected| > 0.1 V`.
+- **SoH:** a degree-2 polynomial regression on capacity-fade data from the NASA PCoE Li-ion battery dataset (cell B0005; Saha and Goebel, 2007), tracked with MLflow. MAE is about 0.026 Ah, roughly 1.4% of nominal capacity.
 
-This starts a Mosquitto MQTT broker on port 1883 and a TimescaleDB database on port 5432.
+## Quick start
 
-## Simulator
+Requirements: Docker Desktop.
 
-`simulator/simulate.py` publishes a simulated battery reading (voltage, current, temperature) to the `battery/cell1/telemetry` MQTT topic once per second.
+1. Copy `.env.example` to `.env` and fill in every value. Use `POSTGRES_USER=twin` and `POSTGRES_DB=batterytwin`. Choose unique, random values for the passwords and for `JWT_SECRET`. `.env` is git-ignored; never commit it.
+2. Create the MQTT user (first time only; the broker needs this file to start):
 
-Run it with:python simulator/simulate.py
+   ```bash
+   docker run --rm -it -v ./mosquitto/config:/mosquitto/config eclipse-mosquitto:2 mosquitto_passwd -c /mosquitto/config/passwd twinuser
+   ```
 
-## Ingestion
+   Use the same password as `MQTT_PASSWORD` in `.env`.
+3. Start everything:
 
-`ingestion/ingest.py` subscribes to `battery/+/telemetry`, validates each reading with Pydantic, and inserts it into the `readings` hypertable in TimescaleDB.
+   ```bash
+   docker compose up -d --build
+   ```
 
-Run it with:$env:POSTGRES_PASSWORD = "your_password"
-python ingestion/ingest.py
+4. Run the dashboard (it is not containerised yet):
 
-Note: all data is simulated. This is a demonstrator, not a production system.
-## Twin
-`twin/twin.py` reads new readings, estimates state of charge (SoC) using Coulomb counting, and saves the result to `twin_state`.
+   ```bash
+   cd dashboard
+   npm install
+   npm run dev
+   ```
 
-Run it with:$env:POSTGRES_PASSWORD = "your_password"
-python ingestion/ingest.py
-It also computes the expected voltage from a simple battery model and saves it alongside SoC.
-It also computes the residual (measured minus expected voltage) and raises an alert when the residual exceeds 0.1V.
-The simulator supports fault injection (press Enter while it's running) to simulate a 10-second overheating and voltage-drop event, which the twin correctly detects and flags as alerts.
-It also predicts State of Health (SoH) using a polynomial regression model trained on real capacity-fade data from the NASA Prognostics Center of Excellence (PCoE) Li-ion Battery Dataset (cell B0005; Saha & Goebel, 2007), tracked with MLflow (MAE ~0.026 Ah, about 1.4% of nominal capacity).
+   Open http://localhost:3000 and log in as `admin` with your `ADMIN_PASSWORD`.
 
-The twin only processes readings from the time it starts, and the simulator's voltage model accounts for IR drop (current x internal resistance) so it stays consistent with the twin's expected-voltage model.
-## Dashboard
+Ports are bound to `127.0.0.1` only: MQTT 1883, TimescaleDB 5433, API 8000.
 
-A Next.js dashboard (`dashboard/`) shows live KPI cards (voltage, current, temperature, SoC, SoH), a measured-vs-expected voltage chart, and the alerts list, polling the API every 2 seconds.
+## API
 
-Run it with:cd dashboard
-npm run dev
-Then open http://localhost:3000.
-## MQTT security
+| Method and path | Auth |
+| --- | --- |
+| `GET /health` | public |
+| `POST /auth/login` | public, returns a JWT (60 minutes) |
+| `GET /cells/{cell_id}/latest` | Bearer token |
+| `GET /cells/{cell_id}/history` | Bearer token |
+| `GET /alerts` | Bearer token |
 
-Mosquitto requires authentication (`allow_anonymous false`). Create a user with:
-Then set `MQTT_PASSWORD` as an environment variable before running the simulator and ingestion service.
-## API security
+## Security
 
-The API uses JWT authentication (`POST /auth/login`). `/cells/*` and `/alerts` require a Bearer token; `/health` is public. Set `ADMIN_PASSWORD` and `JWT_SECRET` as environment variables before starting the API. The dashboard asks for a login and keeps the token in memory only.
+- MQTT broker requires authentication; no anonymous access.
+- API uses JWT (PyJWT, HS256) with bcrypt-hashed admin password; the dashboard keeps the token in memory only.
+- Secrets live in `.env`, which is git-ignored. Compose refuses to start if a required variable is missing.
+- Containers run as a non-root user and ports are bound to localhost.
+- CI (GitHub Actions) runs pytest, Bandit, pip-audit, `npm audit` (production dependencies) and `npm run build` on every push.
 
-Known limitation: the single `admin` user is hard-coded for demo purposes. A real system would store hashed users in the database and support roles.
-[![CI](https://github.com/farhat-cloudsec/battery-twin/actions/workflows/ci.yml/badge.svg)](https://github.com/farhat-cloudsec/battery-twin/actions/workflows/ci.yml)
+## Tests
 
+```bash
+pip install -r requirements.txt
+pytest
+```
 
+9 tests cover API authentication and ingestion validation.
 
+## Known limitations
 
+- Data is simulated; there is one cell, not a pack.
+- The voltage model is a simple linear approximation, not a chemistry-based model.
+- The SoH model is trained on one NASA cell and is not validated for other cell types.
+- The single `admin` user is hard-coded for demo purposes. A real system would store hashed users in the database and support roles.
+- MQTT runs without TLS.
+- If the simulator is restarted on its own, its internal SoC resets and the twin raises false alerts until their states line up again.
+- The dashboard is not containerised yet.
 
+## Planned (not built yet)
 
+- Batch analytics layer: load all four NASA cells, SQL analytics tables, scheduled pipeline (Airflow), transformations and data-quality tests (dbt), an Analytics page in the dashboard.
+- Admin-only fault injection from the dashboard, JWT roles, MQTT TLS, image scanning in CI.
+- A read-only AI assistant that answers questions from the database.
 
+## License
 
-
-
-
+MIT
