@@ -33,7 +33,12 @@ def get_connection():
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
-    print(f"Connected to MQTT broker (rc={rc}). Subscribing to {TOPIC}")
+    if rc != 0:
+        # rc=5 means "not authorised" (wrong username/password). Exit loudly so
+        # Docker and the logs show the failure instead of a fake "Connected".
+        print(f"MQTT connection refused (rc={rc}). Check MQTT_USERNAME / MQTT_PASSWORD.")
+        os._exit(1)
+    print(f"Connected to MQTT broker. Subscribing to {TOPIC}")
     client.subscribe(TOPIC)
 
 
@@ -46,16 +51,20 @@ def on_message(client, userdata, msg):
         return
 
     conn = userdata["conn"]
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO readings (time, cell_id, voltage, current, temperature)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (reading.ts, reading.cell_id, reading.voltage, reading.current, reading.temperature),
-        )
-    conn.commit()
-    print(f"Saved: {reading.cell_id} at {reading.ts}")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO readings (time, cell_id, voltage, current, temperature)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (reading.ts, reading.cell_id, reading.voltage, reading.current, reading.temperature),
+            )
+        conn.commit()
+        print(f"Saved: {reading.cell_id} at {reading.ts}")
+    except psycopg2.Error as e:
+        conn.rollback()  # keep the connection usable after a failed insert
+        print(f"Database error, reading skipped: {e}")
 
 
 def main():
