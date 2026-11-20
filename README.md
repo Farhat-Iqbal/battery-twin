@@ -8,7 +8,11 @@ A digital twin of a single battery cell. A simulator streams sensor data over MQ
 
 ## Demo
 
-[https://github.com/user-attachments/assets/89981ebf-0370-4918-9184-3987479294fb]
+
+
+https://github.com/user-attachments/assets/12b0b35c-cac6-4b40-97db-d1648d2a7192
+
+
 
 ## Architecture
 
