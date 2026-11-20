@@ -20,6 +20,13 @@ CHARGE_CURRENT = 2.0
 LOW_SOC = 20.0
 HIGH_SOC = 90.0
 
+# Normal temperature drifts around AMBIENT_TEMP. A fault adds a temporary offset on top.
+AMBIENT_TEMP = 25.0
+FAULT_VOLTAGE_DROP = 0.3
+FAULT_TEMP_RISE_PER_S = 5.0
+FAULT_TEMP_MAX_OFFSET = 40.0
+FAULT_TEMP_COOLDOWN_PER_S = 2.0
+
 MQTT_USERNAME = "twinuser"
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "change_me")
 
@@ -72,7 +79,8 @@ if not connected.wait(timeout=10):
 
 soc_estimate = 80.0  # simulator's own rough SoC tracker, used only to steer voltage
 voltage = 3.0 + (soc_estimate / 100) * 1.2  # start consistent with the SoC
-temperature = 25.0
+temperature = AMBIENT_TEMP
+fault_temp_offset = 0.0  # extra heat from an active fault; cools down afterwards
 charging = False  # False = discharging, True = charging
 
 
@@ -109,18 +117,25 @@ try:
         target_voltage = 3.0 + (soc_estimate / 100) * 1.2 - (current * R0)  # rough SoC-linked target
         voltage += (target_voltage - voltage) * 0.05 + random.uniform(-0.005, 0.005)
 
-        temperature += random.uniform(-0.1, 0.1)
+        # Normal temperature: small random drift that returns towards ambient.
+        temperature += random.uniform(-0.1, 0.1) + (AMBIENT_TEMP - temperature) * 0.03
 
-        if time.time() < fault_until:
-            temperature += 15.0  # simulate overheating
-            voltage -= 0.3       # simulate a voltage drop
+        fault_active = time.time() < fault_until
+        if fault_active:
+            fault_temp_offset = min(FAULT_TEMP_MAX_OFFSET, fault_temp_offset + FAULT_TEMP_RISE_PER_S)
+        else:
+            fault_temp_offset = max(0.0, fault_temp_offset - FAULT_TEMP_COOLDOWN_PER_S)
+
+        # The fault only affects what is reported; it never changes the real state above.
+        reported_voltage = voltage - (FAULT_VOLTAGE_DROP if fault_active else 0.0)
+        reported_temperature = temperature + fault_temp_offset
 
         reading = {
             "cell_id": CELL_ID,
             "ts": datetime.now(timezone.utc).isoformat(),
-            "voltage": round(voltage, 3),
+            "voltage": round(reported_voltage, 3),
             "current": round(current, 3),
-            "temperature": round(temperature, 2),
+            "temperature": round(reported_temperature, 2),
         }
 
         client.publish(TOPIC, json.dumps(reading))

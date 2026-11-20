@@ -52,6 +52,9 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
 
+  const [faultSending, setFaultSending] = useState(false);
+  const [faultMessage, setFaultMessage] = useState("");
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
@@ -78,6 +81,35 @@ export default function Home() {
     setLatest(null);
     setHistory([]);
     setAlerts([]);
+    setFaultMessage("");
+  };
+
+  const handleFault = async () => {
+    if (!token || faultSending) return;
+    setFaultSending(true);
+    setFaultMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/cells/${CELL_ID}/fault`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleLogout(); // token expired or invalid
+        return;
+      }
+      if (res.ok) {
+        setFaultMessage("Fault command sent (10 s)");
+      } else if (res.status === 403) {
+        setFaultMessage("Admin only");
+      } else {
+        setFaultMessage("Could not send the fault command");
+      }
+    } catch {
+      setFaultMessage("Could not reach the API");
+    } finally {
+      setFaultSending(false);
+      setTimeout(() => setFaultMessage(""), 3000);
+    }
   };
 
   useEffect(() => {
@@ -154,12 +186,24 @@ export default function Home() {
         <h1 className="text-2xl font-semibold">
           Battery Digital Twin — {CELL_ID}
         </h1>
-        <button
-          onClick={handleLogout}
-          className="text-sm border border-zinc-300 rounded px-3 py-1 bg-white"
-        >
-          Sign out
-        </button>
+        <div className="flex items-center gap-3">
+          {faultMessage && (
+            <span className="text-sm text-zinc-600">{faultMessage}</span>
+          )}
+          <button
+            onClick={handleFault}
+            disabled={faultSending}
+            className="text-sm border border-red-300 text-red-700 rounded px-3 py-1 bg-white disabled:opacity-50"
+          >
+            Inject 10 s fault
+          </button>
+          <button
+            onClick={handleLogout}
+            className="text-sm border border-zinc-300 rounded px-3 py-1 bg-white"
+          >
+            Sign out
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-8">

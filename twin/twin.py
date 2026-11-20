@@ -19,6 +19,11 @@ R0 = 0.05  # internal resistance in ohms
 RESIDUAL_THRESHOLD = 0.1  # volts; above this, we flag an anomaly
 DEFAULT_SOC = 80.0  # used only on the very first start, when the database is empty
 
+# Coulomb counting drifts and cannot recover from a wrong starting point, so each
+# reading also pulls SoC a little towards the SoC implied by the measured voltage.
+# A small gain keeps short faults visible while letting the twin re-sync after a restart.
+SOC_CORRECTION_GAIN = 0.01
+
 soc = DEFAULT_SOC
 cycle_count = 0  # simple proxy for "how aged" the simulated cell is
 
@@ -31,6 +36,12 @@ soh_nominal_capacity = soh_bundle["nominal_capacity"]
 def expected_voltage(soc_value, current):
     ocv = 3.0 + (soc_value / 100) * 1.2  # simple open-circuit voltage model (3.0V to 4.2V)
     return ocv - (current * R0)
+
+
+def soc_from_voltage(voltage, current):
+    """Invert the voltage model: measured voltage -> the SoC it implies."""
+    ocv = voltage + current * R0
+    return max(0.0, min(100.0, (ocv - 3.0) / 1.2 * 100))
 
 
 def predict_soh(cycle):
@@ -108,8 +119,12 @@ def main():
             rows = get_new_readings(conn, last_time)
             for t, current, voltage_measured in rows:
                 dt_hours = 1 / 3600  # readings arrive every 1 second
-                soc += (current * dt_hours) / CAPACITY_AH * 100
+                soc += (current * dt_hours) / CAPACITY_AH * 100  # Coulomb counting
                 soc = max(0.0, min(100.0, soc))  # keep between 0 and 100
+
+                # Pull SoC gently towards what the measured voltage implies.
+                soc += SOC_CORRECTION_GAIN * (soc_from_voltage(voltage_measured, current) - soc)
+                soc = max(0.0, min(100.0, soc))
 
                 cycle_count += 1 / 3600  # roughly simulate aging over time, for demo purposes
 
