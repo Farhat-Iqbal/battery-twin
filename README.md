@@ -105,6 +105,10 @@ pytest
 
 9 tests cover API authentication and ingestion validation.
 
+## Cloud exercise (Databricks)
+
+A side exercise: the same NASA battery data analysed in Databricks Free Edition (SQL window functions, data quality checks, a PySpark notebook). See [cloud-exercises](cloud-exercises/README.md). It is separate from the Docker Compose system above.
+
 ## Known limitations
 
 - Data is simulated; there is one cell, not a pack.
