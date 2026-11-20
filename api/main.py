@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -8,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 
+import paho.mqtt.publish as mqtt_publish
 import psycopg2
 import psycopg2.extras
 
@@ -18,6 +21,12 @@ DB_CONFIG = {
     "password": os.environ.get("POSTGRES_PASSWORD", "change_me"),
     "dbname": "batterytwin",
 }
+
+MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
+MQTT_PORT = 1883
+MQTT_USERNAME = "twinuser"
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "change_me")
+FAULT_SECONDS = 10
 
 SECRET_KEY = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 ALGORITHM = "HS256"
@@ -155,3 +164,25 @@ def alerts(limit: int = 20, current_user: str = Depends(get_current_user)):
             return cur.fetchall()
     finally:
         conn.close()
+
+
+@app.post("/cells/{cell_id}/fault")
+def inject_fault(cell_id: str, current_user: str = Depends(get_current_user)):
+    """Ask the simulator (over MQTT) to inject a short fault. Admin only."""
+    if current_user != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    # cell_id becomes part of an MQTT topic, so only allow safe characters.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", cell_id):
+        raise HTTPException(status_code=400, detail="Invalid cell_id")
+    payload = json.dumps({"command": "inject_fault", "seconds": FAULT_SECONDS})
+    try:
+        mqtt_publish.single(
+            f"battery/{cell_id}/control",
+            payload,
+            hostname=MQTT_HOST,
+            port=MQTT_PORT,
+            auth={"username": MQTT_USERNAME, "password": MQTT_PASSWORD},
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not reach the MQTT broker")
+    return {"status": "fault command sent", "seconds": FAULT_SECONDS}

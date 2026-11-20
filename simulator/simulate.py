@@ -10,6 +10,7 @@ BROKER = os.environ.get("MQTT_HOST", "localhost")
 PORT = 1883
 CELL_ID = "cell1"
 TOPIC = f"battery/{CELL_ID}/telemetry"
+CONTROL_TOPIC = f"battery/{CELL_ID}/control"
 CAPACITY_AH = 2.5
 R0 = 0.05  # must match twin.py's R0 for the expected-voltage comparison to make sense
 
@@ -23,19 +24,44 @@ MQTT_USERNAME = "twinuser"
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "change_me")
 
 connected = threading.Event()
+fault_until = 0  # timestamp until which a fault is active
+
+
+def start_fault(seconds):
+    global fault_until
+    fault_until = time.time() + seconds
+    print(f">>> FAULT INJECTED for {seconds} seconds <<<")
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         print("Connected to MQTT broker.")
+        client.subscribe(CONTROL_TOPIC)
         connected.set()
     else:
         print(f"MQTT connection refused (rc={rc}). Check MQTT_USERNAME / MQTT_PASSWORD.")
 
 
+def on_message(client, userdata, msg):
+    """Handle control commands, for example from the API's fault button."""
+    try:
+        data = json.loads(msg.payload.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("Ignoring invalid control message.")
+        return
+    if not isinstance(data, dict) or data.get("command") != "inject_fault":
+        print("Ignoring unknown control command.")
+        return
+    seconds = data.get("seconds", 10)
+    if not isinstance(seconds, (int, float)):
+        seconds = 10
+    start_fault(max(1, min(30, seconds)))
+
+
 client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 client.on_connect = on_connect
+client.on_message = on_message
 client.connect(BROKER, PORT)
 client.loop_start()
 
@@ -48,24 +74,21 @@ soc_estimate = 80.0  # simulator's own rough SoC tracker, used only to steer vol
 voltage = 3.0 + (soc_estimate / 100) * 1.2  # start consistent with the SoC
 temperature = 25.0
 charging = False  # False = discharging, True = charging
-fault_until = 0  # timestamp until which a fault is active
 
 
 def listen_for_fault():
-    global fault_until
     while True:
         try:
             input()  # waits for you to press Enter
         except EOFError:
             return  # no keyboard attached (for example inside a container)
-        fault_until = time.time() + 10
-        print(">>> FAULT INJECTED for 10 seconds <<<")
+        start_fault(10)
 
 
 threading.Thread(target=listen_for_fault, daemon=True).start()
 
 print(f"Simulator started. Publishing to {TOPIC} every 1 second.")
-print("Press Enter at any time to inject a 10-second fault. Press Ctrl+C to stop.")
+print("Press Enter (or use the dashboard button) to inject a 10-second fault. Ctrl+C to stop.")
 
 try:
     while True:

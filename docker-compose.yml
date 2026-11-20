@@ -62,7 +62,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set in .env}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is not set in .env}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is not set in .env}
+      MQTT_HOST: mosquitto
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD is not set in .env}
     depends_on:
+      mosquitto:
+        condition: service_started
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
